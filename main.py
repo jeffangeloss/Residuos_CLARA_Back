@@ -1,7 +1,7 @@
 """
 CLARA+ FastAPI Backend API
 Universidad de Lima - CSBQR
-Patrones de desarrollo inspirados en backend_v3 & CORE V3
+Plataforma Unificada de Clasificación, Rotulado y Declaración de Residuos Peligrosos
 """
 
 import os
@@ -16,7 +16,7 @@ from core.response import success_response, error_response
 from typing import List
 
 app = FastAPI(
-    title="CLARA+ API",
+    title="CLARA+ API - Residuos Peligrosos ULima",
     description="API de Clasificación, Rotulado, Incompatibilidad y Declaración Oficial de Residuos Peligrosos",
     version="1.0.0"
 )
@@ -35,7 +35,7 @@ async def global_exception_handler(request: Request, exc: Exception):
     return JSONResponse(
         status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
         content=error_response(
-            message="Ocurrió un error en el servidor",
+            message="Ocurrió un error interno en el servidor",
             error=str(exc)
         )
     )
@@ -43,11 +43,12 @@ async def global_exception_handler(request: Request, exc: Exception):
 @app.get("/")
 def read_root():
     return success_response(
-        message="Servicio CLARA+ Backend API disponible",
+        message="Servicio CLARA+ Residuos Peligrosos API disponible",
         data={
-            "system": "CLARA+ ULima Backend API",
+            "system": "CLARA+ ULima Residuos Peligrosos API",
             "version": "1.0.0",
-            "architecture": "backend_v3 modular design + CORE V3 grams canonical unit"
+            "ontologia": "Ontología Canónica ULima v2 (15 categorías)",
+            "matriz": "Matriz de Incompatibilidad CSBQR 11x11"
         }
     )
 
@@ -58,12 +59,12 @@ def health_check():
 @app.post("/api/v1/clasificar")
 def clasificar(entrada: EntradaResiduoRequest):
     """
-    Ejecuta el motor determinista de ontología ULima (15 categorías).
+    Ejecuta el motor determinista de ontología ULima (15 categorías de residuos peligrosos).
     """
     try:
         resultado = clasificar_residuo(entrada)
         return success_response(
-            message="Residuo clasificado exitosamente",
+            message="Residuo peligros clasificado exitosamente",
             data=resultado.model_dump()
         )
     except Exception as e:
@@ -71,7 +72,7 @@ def clasificar(entrada: EntradaResiduoRequest):
         return JSONResponse(
             status_code=status.HTTP_400_BAD_REQUEST,
             content=error_response(
-                message="Error al clasificar el residuo",
+                message="Error al clasificar el residuo peligroso",
                 error=str(e)
             )
         )

@@ -1,6 +1,5 @@
 """
-CORE V3 Database Models - FastAPI / SQLAlchemy (PostgreSQL)
-Alineado a las buenas prácticas de desarrollo de CORE V3
+Modelos de Datos Pydantic y Esquemas API - Residuos Peligrosos CLARA+ ULima
 """
 
 from datetime import datetime
@@ -16,7 +15,6 @@ class TipoMovimiento(str, Enum):
 
 class MotivoMovimiento(str, Enum):
     GENERACION_LAB = "generacion_laboratorio"
-    CONSUMO_LAB = "consumo_laboratorio"
     TRASLADO_ACOPIO = "traslado_acopio"
     ENTREGA_EORS = "entrega_eors"
     CENSO_INICIAL = "censo_inicial"
@@ -55,7 +53,7 @@ class EntradaResiduoRequest(BaseModel):
     descripcion: str
     insumos: List[str]
     estado_fisico: str = "Líquido"
-    peso_bruto_g: float = Field(..., description="Peso medido en balanza en GRAMOS (Unidad Canónica)")
+    peso_bruto_g: float = Field(..., description="Peso bruto medido en balanza en GRAMOS")
     tara_g: float = Field(0.0, description="Tara del envase en GRAMOS")
     ph: Optional[float] = None
     foto_url: Optional[str] = None
@@ -75,9 +73,9 @@ class ResultadoClasificacion(BaseModel):
     clase_basilea: str
     grupo_compatibilidad: str
     no_mezclar_con: List[str]
-    envase_recomendado: string
-    peso_neto_g: float = Field(..., description="Peso en GRAMOS almacenado en BD")
-    peso_neto_kg: float = Field(..., description="Conversión oficial ÷1000 a KG para la declaración")
+    envase_recomendado: str
+    peso_neto_g: float = Field(..., description="Peso neto en GRAMOS")
+    peso_neto_kg: float = Field(..., description="Conversión a KG para la declaración (g / 1000)")
     confianza: str
     observaciones: List[str]
     pictogramas_ghs: List[str]
