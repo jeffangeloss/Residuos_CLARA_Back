@@ -4,12 +4,14 @@ Universidad de Lima - CSBQR
 Patrones de desarrollo inspirados en backend_v3 & CORE V3
 """
 
+import os
 import traceback
 from fastapi import FastAPI, HTTPException, status, Request
 from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from core.models import EntradaResiduoRequest, ResultadoClasificacion
 from core.classifier import clasificar_residuo, PARES_PROHIBIDOS
+from core.migrador_excel import parsear_base_historica
 from core.response import success_response, error_response
 from typing import List
 
@@ -27,7 +29,6 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Custom Global Exception Handler (Patrón backend_v3)
 @app.exception_handler(Exception)
 async def global_exception_handler(request: Request, exc: Exception):
     traceback.print_exc()
@@ -58,7 +59,6 @@ def health_check():
 def clasificar(entrada: EntradaResiduoRequest):
     """
     Ejecuta el motor determinista de ontología ULima (15 categorías).
-    Respuesta estandarizada tipo backend_v3.
     """
     try:
         resultado = clasificar_residuo(entrada)
@@ -116,3 +116,18 @@ def verificar_acopio(grupos: List[str]):
                 error=str(e)
             )
         )
+
+@app.get("/api/v1/historico/benchmark")
+def diagnostico_historico():
+    """
+    Procesa y reclasifica los 856 residuos reales de DB_DeclaraciónResiduosPeligrosos.xlsx.
+    """
+    excel_path = "/Users/jjjangelosss/ResiduosCLARA+/DB_DeclaraciónResiduosPeligrosos.xlsx"
+    if not os.path.exists(excel_path):
+        raise HTTPException(status_code=404, detail="Archivo DB_DeclaraciónResiduosPeligrosos.xlsx no encontrado")
+    
+    reporte = parsear_base_historica(excel_path)
+    return success_response(
+        message="Diagnóstico y reclasificación de la base histórica de 856 residuos completado",
+        data=reporte
+    )
