@@ -1,0 +1,26 @@
+# Python runtime and tooling
+__pycache__/
+*.py[cod]
+*.so
+.pytest_cache/
+.coverage
+coverage.xml
+htmlcov/
+
+# Local environments and configuration
+.venv/
+venv/
+.env
+.env.*
+!.env.example
+
+# Local development data and generated artifacts
+residuos_clara.db
+*.db.bak
+*.sqlite3
+generated/
+
+# Editor and operating system files
+.DS_Store
+.idea/
+.vscode/
