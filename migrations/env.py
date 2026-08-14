@@ -49,10 +49,12 @@ def run_migrations_online() -> None:
             target_metadata=target_metadata,
             compare_type=True,
             compare_server_default=True,
-            # SQLite no soporta ALTER TABLE para la mayoría de cambios; el modo
-            # batch recrea la tabla y mantiene las migraciones aplicables tanto
-            # en desarrollo local como en PostgreSQL.
-            render_as_batch=connection.dialect.name == "sqlite",
+            # PostgreSQL soporta ALTER TABLE, así que las migraciones nuevas se
+            # escriben con operaciones directas. Las anteriores a la Fase 9 usan
+            # `batch_alter_table` porque el proyecto también corría sobre
+            # SQLite; se conservan tal cual —son el historial del esquema y
+            # funcionan igual aquí— y no se reescriben.
+            render_as_batch=False,
         )
 
         with context.begin_transaction():

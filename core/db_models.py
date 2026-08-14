@@ -117,7 +117,11 @@ class CategoriaULimaDB(Base):
     # razón que la matriz: la etiqueta debe reflejar el dato persistido.
     no_mezclar_con = Column(String(300), nullable=False, server_default="")
 
-    declaraciones = relationship("DeclaracionResiduoDB", back_populates="categoria")
+    declaraciones = relationship(
+        "DeclaracionResiduoDB",
+        back_populates="categoria",
+        foreign_keys="DeclaracionResiduoDB.categoria_id",
+    )
 
 
 class TipoEnvaseDB(Base):
@@ -133,6 +137,64 @@ class TipoEnvaseDB(Base):
     id = Column(Integer, primary_key=True, index=True, autoincrement=True)
     codigo = Column(String(20), unique=True, index=True, nullable=False)
     nombre = Column(String(100), unique=True, nullable=False)
+
+
+class PersonaDB(Base):
+    """Padrón de personal: quién declara, quién elabora y quién es responsable.
+
+    No es la tabla de autenticación —esa es `usuarios`, con su contraseña—.
+    Aquí no hay credenciales: es el catálogo de nombres que sustituye al texto
+    libre de los formularios, donde la misma persona se escribía de tres
+    maneras y quedaban como tres personas distintas.
+
+    Igual que el de laboratorios, **este catálogo no es cerrado**: una persona
+    que no esté sembrada se registra sobre la marcha y queda marcada, en vez de
+    bloquear una declaración legítima.
+    """
+
+    __tablename__ = "personal"
+
+    id = Column(Integer, primary_key=True, index=True, autoincrement=True)
+    codigo = Column(String(20), unique=True, index=True, nullable=False)
+    nombre = Column(String(150), nullable=False)
+    # Nombre plegado a minúsculas y sin acentos. Es la clave real de identidad:
+    # el nombre visible conserva su escritura, pero dos escrituras del mismo
+    # nombre no pueden convivir como dos personas.
+    nombre_clave = Column(String(150), unique=True, index=True, nullable=False)
+    correo = Column(String(120), nullable=True)
+    telefono = Column(String(30), nullable=True)
+    dependencia_id = Column(Integer, ForeignKey("dependencias.id"), nullable=True, index=True)
+    # Los tres papeles del proceso real, y no son excluyentes: quien encarga un
+    # laboratorio también genera residuos en él.
+    es_encargado = Column(Boolean, nullable=False, default=False, server_default="0")
+    es_csbqr = Column(Boolean, nullable=False, default=False, server_default="0")
+    es_generador = Column(Boolean, nullable=False, default=True, server_default="1")
+    activo = Column(Boolean, nullable=False, default=True, server_default="1")
+    en_catalogo_oficial = Column(Boolean, nullable=False, default=False, server_default="0")
+
+    dependencia = relationship("DependenciaDB")
+    alias = relationship(
+        "PersonaAliasDB", back_populates="persona", cascade="all, delete-orphan"
+    )
+
+
+class PersonaAliasDB(Base):
+    """Cada forma en que el nombre de una persona se escribió en el histórico.
+
+    Sostiene la importación de la Fase 11: las 856 filas traen el nombre a
+    mano, y sin estas variantes cada escritura crearía una persona nueva.
+    """
+
+    __tablename__ = "personal_alias"
+
+    id = Column(Integer, primary_key=True, index=True, autoincrement=True)
+    persona_id = Column(
+        Integer, ForeignKey("personal.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    alias_clave = Column(String(150), unique=True, index=True, nullable=False)
+    alias_texto = Column(String(150), nullable=False)
+
+    persona = relationship("PersonaDB", back_populates="alias")
 
 
 class UsuarioDB(Base):
@@ -217,6 +279,14 @@ class DeclaracionResiduoDB(Base):
             name="cantidad_coherente_con_pesaje",
         ),
         CheckConstraint("ph IS NULL OR (ph >= 0 AND ph <= 14)", name="ph_en_rango"),
+        # Las dimensiones van a la página 2 del formato oficial, junto a la
+        # foto. Cero no es una medida: un envase con 0 cm de ancho no existe,
+        # y admitirlo dejaría pasar el campo sin llenar disfrazado de dato.
+        CheckConstraint("ancho_cm IS NULL OR ancho_cm > 0", name="ancho_positivo"),
+        CheckConstraint("alto_cm IS NULL OR alto_cm > 0", name="alto_positivo"),
+        CheckConstraint(
+            "profundidad_cm IS NULL OR profundidad_cm > 0", name="profundidad_positiva"
+        ),
         CheckConstraint(_restringir("origen", Origen), name="origen_valido"),
         CheckConstraint(_restringir("estado_fisico", EstadoFisico), name="estado_fisico_valido"),
         CheckConstraint(_restringir("confianza", NivelConfianza), name="confianza_valida"),
@@ -254,6 +324,14 @@ class DeclaracionResiduoDB(Base):
     estado_fisico = Column(String(50), nullable=False, default=EstadoFisico.LIQUIDO.value)
     foto_url = Column(String(500), nullable=True)
 
+    # Envase y dimensiones. El formulario los capturaba y CLARA+ los perdía:
+    # sin ellos no se puede llenar la página 2 del formato de declaración, que
+    # es una tabla de fotos de envase con sus medidas.
+    tipo_envase_id = Column(Integer, ForeignKey("tipos_envase.id"), nullable=True, index=True)
+    ancho_cm = Column(Float, nullable=True)
+    alto_cm = Column(Float, nullable=True)
+    profundidad_cm = Column(Float, nullable=True)
+
     # Cifra que se imprime en el formato oficial, en la unidad declarada. Es la
     # autoritativa: el formato acepta Kg y L, y 277 de los 856 registros
     # históricos están en litros.
@@ -281,6 +359,27 @@ class DeclaracionResiduoDB(Base):
     estado = Column(String(20), nullable=False, default=EstadoResiduo.GENERADO.value)
     escalar_csbqr = Column(Boolean, nullable=False, default=False)
     narrativa = Column(Text, nullable=False)
+
+    # La clasificación es una propuesta, no un veredicto.
+    #
+    # El Gem lo dice de su propia salida: "es una ayuda técnica interna; no
+    # reemplaza la clasificación legal ni la decisión del CSBQR". Y el histórico
+    # lo respalda: 548 nombres de residuo distintos, que ninguna coincidencia de
+    # palabras clave clasifica sola.
+    #
+    # Por eso se guarda qué propuso el sistema aparte de qué quedó vigente:
+    # `categoria_id` es la categoría en vigor y `categoria_propuesta_id` la que
+    # se propuso. Si difieren, un humano corrigió. Conservar ambas es lo que
+    # permite medir cuánto acierta el clasificador con datos reales, en vez de
+    # perder la propuesta en el momento de sobrescribirla.
+    categoria_propuesta_id = Column(
+        String(50), ForeignKey("categorias_ulima.id"), nullable=True, index=True
+    )
+    clasificacion_confirmada = Column(
+        Boolean, nullable=False, default=False, server_default="0"
+    )
+    confirmada_por = Column(String(150), nullable=True)
+    confirmada_en = Column(DateTime(timezone=True), nullable=True)
     creado_en = Column(DateTime(timezone=True), nullable=False, default=ahora_utc)
     actualizado_en = Column(
         DateTime(timezone=True), nullable=False, default=ahora_utc, onupdate=ahora_utc
@@ -288,7 +387,15 @@ class DeclaracionResiduoDB(Base):
 
     registro = relationship("RegistroDB", back_populates="declaraciones")
     usuario = relationship("UsuarioDB", back_populates="declaraciones")
-    categoria = relationship("CategoriaULimaDB", back_populates="declaraciones")
+    # Dos claves foráneas apuntan ahora a `categorias_ulima`, así que hay que
+    # decir cuál sostiene cada relación.
+    categoria = relationship(
+        "CategoriaULimaDB", back_populates="declaraciones", foreign_keys=[categoria_id]
+    )
+    categoria_propuesta = relationship(
+        "CategoriaULimaDB", foreign_keys=[categoria_propuesta_id]
+    )
+    tipo_envase = relationship("TipoEnvaseDB")
 
     @property
     def laboratorio(self):

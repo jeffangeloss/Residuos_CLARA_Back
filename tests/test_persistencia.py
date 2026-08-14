@@ -223,8 +223,6 @@ def test_fallo_al_insertar_hijos_revierte_la_cabecera(db):
     resultado = clasificar_residuo(entrada)
     # Insumo duplicado inyectado después de validar: viola la unicidad de
     # (declaración, insumo) al confirmar, con la cabecera ya insertada.
-    # No se usa una cadena sobredimensionada porque SQLite no aplica el largo
-    # de VARCHAR y la prueba no fallaría igual en ambos motores.
     entrada.insumos = ["acetona", "acetona"]
 
     with pytest.raises(IntegrityError):
@@ -232,6 +230,25 @@ def test_fallo_al_insertar_hijos_revierte_la_cabecera(db):
 
     db.rollback()
     assert db.query(DeclaracionResiduoDB).count() == 0
+
+
+def test_un_campo_desbordado_se_rechaza(db):
+    """El largo de los `VARCHAR` se aplica de verdad.
+
+    Esta prueba no era posible mientras la suite corría sobre SQLite, que
+    acepta cualquier longitud: pasaba en verde sin comprobar nada. Es el
+    ejemplo concreto de por qué el proyecto dejó de admitir ese motor.
+    """
+    from sqlalchemy.exc import DataError
+
+    from core.db_models import PersonaDB
+    from core.repositorio import registrar_persona
+
+    with pytest.raises(DataError):
+        registrar_persona(db, nombre="Nombre desmesurado " * 20)
+
+    db.rollback()
+    assert db.query(PersonaDB).filter(PersonaDB.nombre.like("Nombre desmesurado%")).count() == 0
 
 
 # --------------------------------------------------------------------------

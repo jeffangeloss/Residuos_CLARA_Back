@@ -117,6 +117,30 @@ class NivelConfianza(str, Enum):
     MEDIO = "Medio"
     BAJO = "Bajo"
 
+
+class DecisionClasificacion(str, Enum):
+    """Qué hizo el humano con la propuesta del clasificador.
+
+    Distinguir aceptar de corregir es lo que permite saber si el clasificador
+    sirve: si la mayoría de las propuestas se corrigen, las reglas están mal.
+    Con la propuesta sobrescrita en silencio esa cifra no existía.
+    """
+
+    ACEPTADA = "aceptada"
+    CORREGIDA = "corregida"
+
+
+class RolPadron(str, Enum):
+    """Papel de una persona en el proceso, para filtrar el padrón.
+
+    No son excluyentes: quien encarga un laboratorio también genera residuos
+    en él, y buena parte del personal del CSBQR hace las dos cosas.
+    """
+
+    ENCARGADO = "encargado"
+    CSBQR = "csbqr"
+    GENERADOR = "generador"
+
 class RolUsuario(str, Enum):
     INVESTIGADOR = "investigador"
     LABORATORISTA = "laboratorista"
@@ -135,6 +159,21 @@ class Veredicto(str, Enum):
 def valores(enumeracion) -> tuple:
     """Devuelve los valores de un Enum para restringirlos también en la base."""
     return tuple(miembro.value for miembro in enumeracion)
+
+
+# Categorías que el CSBQR tiene que ver sí o sí: lo que no se identificó y lo
+# radiactivo, que no se gestiona con el resto.
+CATEGORIAS_QUE_ESCALAN = frozenset({"no-identificados", "radiactivos"})
+
+
+def requiere_escalamiento(categoria_id: str, desconocido: bool = False) -> bool:
+    """Si una declaración debe subir al CSBQR.
+
+    Vive aquí y no en el clasificador porque también decide la regla cuando un
+    humano corrige la categoría: con la regla escrita dos veces, corregir un
+    residuo podía dejarlo escalado sin motivo o desescalarlo indebidamente.
+    """
+    return desconocido or categoria_id in CATEGORIAS_QUE_ESCALAN
 
 
 # Ciclo de vida del residuo. Un residuo DISPUESTO es terminal: ya salió con el
@@ -207,11 +246,77 @@ class ResiduoDeRegistroRequest(BaseModel):
     tara_g: float = Field(0.0, ge=0)
     ph: Optional[float] = Field(None, ge=0, le=14)
     foto_url: Optional[str] = Field(None, max_length=500)
+    # Envase y dimensiones: la página 2 del formato oficial es una tabla de
+    # fotos de envase con sus medidas, y sin estos campos no se puede llenar.
+    tipo_envase: Optional[str] = Field(None, max_length=100)
+    ancho_cm: Optional[float] = Field(None, gt=0, le=500)
+    alto_cm: Optional[float] = Field(None, gt=0, le=500)
+    profundidad_cm: Optional[float] = Field(None, gt=0, le=500)
     es_punzocortante: bool = False
     es_biologico: bool = False
     es_aerosol: bool = False
     es_envase_vacio: bool = False
     desconocido: bool = False
+
+
+class ConfirmacionCategoriaRequest(BaseModel):
+    """Aceptación o corrección humana de la categoría propuesta.
+
+    `categoria_id` viaja solo cuando se corrige. Aceptar es confirmar que la
+    propuesta del sistema queda como está, y también deja constancia: una
+    propuesta confirmada por una persona no es lo mismo que una sin revisar.
+    """
+
+    decision: DecisionClasificacion
+    confirmada_por: str = Field(..., min_length=1, max_length=150)
+    categoria_id: Optional[str] = Field(None, max_length=50)
+    motivo: Optional[str] = Field(None, max_length=300)
+
+    @field_validator("confirmada_por")
+    @classmethod
+    def _quien_confirma(cls, valor: str) -> str:
+        limpio = valor.strip()
+        if not limpio:
+            raise ValueError("Indique quién confirma la clasificación")
+        return limpio
+
+    @model_validator(mode="after")
+    def _corregir_exige_categoria(self):
+        if self.decision is DecisionClasificacion.CORREGIDA and not self.categoria_id:
+            raise ValueError(
+                "Para corregir la clasificación indique la categoría correcta"
+            )
+        if self.decision is DecisionClasificacion.ACEPTADA and self.categoria_id:
+            raise ValueError(
+                "Aceptar la propuesta no admite otra categoría: para cambiarla, "
+                "la decisión es 'corregida'"
+            )
+        return self
+
+
+class PersonaRequest(BaseModel):
+    """Alta de una persona en el padrón.
+
+    El catálogo no es cerrado, por la misma razón que el de laboratorios: 29 de
+    los 101 registros históricos usan laboratorios que el formato no lista, y
+    bloquear lo que no esté sembrado impediría declaraciones legítimas.
+    """
+
+    nombre: str = Field(..., min_length=3, max_length=150)
+    dependencia: Optional[str] = Field(None, max_length=100)
+    correo: Optional[EmailStr] = None
+    telefono: Optional[str] = Field(None, max_length=30)
+    es_encargado: bool = False
+    es_csbqr: bool = False
+    es_generador: bool = True
+
+    @field_validator("nombre")
+    @classmethod
+    def _nombre_utilizable(cls, valor: str) -> str:
+        limpio = " ".join(valor.split())
+        if len(limpio) < 3:
+            raise ValueError("El nombre es demasiado corto para identificar a alguien")
+        return limpio
 
 
 class CambioEstadoRequest(BaseModel):
@@ -273,6 +378,10 @@ class EntradaResiduoRequest(BaseModel):
     unidad: Unidad = Unidad.KG
     ph: Optional[float] = Field(None, ge=0, le=14)
     foto_url: Optional[str] = Field(None, max_length=500)
+    tipo_envase: Optional[str] = Field(None, max_length=100)
+    ancho_cm: Optional[float] = Field(None, gt=0, le=500)
+    alto_cm: Optional[float] = Field(None, gt=0, le=500)
+    profundidad_cm: Optional[float] = Field(None, gt=0, le=500)
     es_punzocortante: bool = False
     es_biologico: bool = False
     es_aerosol: bool = False

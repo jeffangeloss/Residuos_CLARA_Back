@@ -138,10 +138,116 @@ _REGLAS_ENVASE: List[Tuple[Tuple[str, ...], Tuple[str, ...], str]] = [
 ]
 
 
-def _clave(texto: str) -> str:
-    """Minúsculas sin acentos, para comparar sin depender de la escritura."""
+# ---------------------------------------------------------------------------
+# Padrón de personal
+# ---------------------------------------------------------------------------
+#
+# Los dos formularios de Google recogían el correo automáticamente, pero en el
+# Excel exportado esa columna está vacía en las 856 filas. Los nombres, en
+# cambio, se escribieron a mano cada vez, y se multiplicaron: la misma persona
+# aparece como "Javier Quino" y "Javier Quino Favero"; "Milagros Alvarado",
+# "Milagros Alvarado Apaza" y "Milagros Ariana Alvarado Apaza"; "Nancy
+# Chasquibol Silva" y "Nancy Chaquibol Silva", que además es un error de
+# tipeo. Contarlas como personas distintas infla el padrón de 34 encargados
+# reales a 34 cadenas de texto sin relación entre sí.
+#
+# Por eso cada persona trae sus variantes conocidas: el móvil ofrece el nombre
+# canónico y la importación histórica de la Fase 11 puede resolver las 856
+# filas contra este padrón en lugar de crear una persona por escritura.
+#
+# Los tres papeles no son excluyentes: Silvia Ponce firma como encargada de
+# laboratorio y también genera residuos; Marcos Albarracín aparece en los tres.
+#
+# (nombre canónico, dependencia, es_encargado, es_csbqr, es_generador, alias)
+PERSONAL_OFICIAL: List[Tuple[str, Optional[str], bool, bool, bool, Tuple[str, ...]]] = [
+    # -- Encargados y responsables de laboratorio -----------------------------
+    ("Henrry Delgado Ortega", "Ingeniería Civil", True, False, False, ("Henrry Delgado",)),
+    ("Manuel Ricardo Madrid Argomedo", "Ingeniería Civil", True, False, False,
+     ("Ricardo Manuel Madrid",)),
+    ("Marko Lopez Bendezu", "Ingeniería Civil", True, False, False, ()),
+    ("George Power Porto", "Ingeniería Civil", True, False, False, ("George Power",)),
+    ("Francisco James León Trujillo", "Ingeniería Civil", True, False, False, ()),
+    ("Jose Matias Leon", "Ingeniería Civil", True, False, False, ()),
+    ("Darwin La Torre Esquivel", "Ingeniería Civil", True, False, False, ()),
+    ("Javier Quino Favero", "Ingeniería Industrial", True, False, True, ("Javier Quino",)),
+    ("Nancy Chasquibol Silva", "Ingeniería Industrial", True, False, False,
+     ("Nancy Chaquibol Silva",)),
+    # Firmó registros en Industrial y en Civil; se le asigna la dependencia en
+    # la que aparece más veces, sin que eso le impida declarar en la otra.
+    ("Juan Carlos Yacono Llanos", "Ingeniería Industrial", True, False, False,
+     ("Juan Carlos Yacono",)),
+    ("William Fernandez Goicochea", "Ingeniería Industrial", True, False, True, ()),
+    ("Juan Carlos Goñi Delion", "Ingeniería Industrial", True, False, False,
+     ("Juan Carlos Goñi Delión",)),
+    ("Jorge Sanabria Villanueva", "Ingeniería Industrial", True, False, False,
+     ("Jorge Sanabria",)),
+    ("Wilfredo Hernández Gorritti", "Ingeniería Industrial", True, False, False,
+     ("Wilfredo Hernandez Gorritti", "Wilfredo Hernandez")),
+    ("Edmundo Arroyo", "Ingeniería Industrial", True, False, False, ()),
+    ("Emilia Daniela Lombardi Franco", "Ingeniería Industrial", True, False, False, ()),
+    ("Guillermo Davies", "Ingeniería Industrial", True, False, False, ()),
+    ("Fabricio Paredes Larroca", "Ingeniería Industrial", True, False, False, ()),
+    ("Patricia Larios", "Ingeniería Industrial", True, False, False, ()),
+    ("Leonardo Nicolay Vinces Ramos", "Ingeniería Industrial", True, False, False, ()),
+    ("Marcos Antonio Albarracin Manrique", "Ingeniería Industrial", True, True, True, ()),
+    ("Jimmy Bedoya Leon", "Ingeniería Industrial", True, True, False, ()),
+    ("Silvia Ponce", "Ingeniería Industrial", True, False, True, ()),
+    # "Dr. Acosta" es un tratamiento, no un nombre completo: es el único del
+    # histórico que no permite identificar a la persona. Se conserva tal cual
+    # porque es lo que firma los registros del Departamento Médico, y queda
+    # marcado para que el CSBQR lo complete.
+    ("Dr. Acosta", "Departamento Médico", True, False, False, ()),
+
+    # -- Personal del CSBQR que elabora la declaración ------------------------
+    ("Christian Querevalú Borja", None, False, True, True, ()),
+    ("Fiama Norabuena", None, False, True, True, ()),
+    ("Irene Valdez", None, False, True, True, ()),
+    ("Pamela Barreto Méndez", None, False, True, True, ("Pamela Barreto",)),
+    ("Miguel Angel Leguía Martinez", None, False, True, True,
+     ("Miguel Angel Leguia Martinez",)),
+    ("Rafael Alarcon Rivera", None, False, True, True, ("Rafael Alarcon",)),
+    ("Milagros Ariana Alvarado Apaza", None, False, True, True,
+     ("Milagros Alvarado Apaza", "Milagros Alvarado")),
+    ("Samuel Zegarra Poma", None, False, True, True, ("Samuel Zegarra",)),
+    ("Richard Joe Osorio Mendoza", None, False, True, True,
+     ("Joe Osorio Mendoza", "Richard Osorio Mendoza")),
+    ("Hugo David Bedriñana Donayre", None, False, True, True, ("Hugo Bedriñana Doanyre",)),
+    ("Rocio Gabriela León Cueva", None, False, True, True, ("Rocio León",)),
+    ("Fernando Sandoval", None, False, True, True, ()),
+    ("Mario Dayvid Carbajal Ccoyllo", None, False, True, True, ()),
+    ("Alejandro Sebastian Vera Quiroz", None, False, True, True, ()),
+    ("Christian García Arteaga", None, False, True, True, ()),
+    ("Eber Richard Garcia Valer", None, False, True, True, ()),
+    ("Juan Carlos Arca", None, False, True, True, ()),
+    ("Vladimir Basilio Sulca Ñahui", None, False, True, True, ()),
+    ("Gerson Ocampo", None, False, True, True, ()),
+    ("Rosmelio Caldas", None, False, True, True, ()),
+    ("Bryan Carhuas", None, False, True, True, ()),
+    ("Michael Lujan Bastidas", None, False, True, True, ()),
+    ("Ruben Torres", None, False, True, True, ()),
+    ("Bary Osorio", None, False, True, True, ()),
+    ("Katheryn Venturo", None, False, True, False, ()),
+    # Igual que "Dr. Acosta": es un tratamiento y un apellido. Firma 13 filas
+    # del histórico, así que no puede omitirse del padrón.
+    ("Lic. Alvarez", None, False, True, True, ()),
+
+    # -- Generadores que no elaboran declaraciones ---------------------------
+    ("Rusbel Romero", None, False, False, True, ()),
+]
+
+
+def sin_acentos(texto: str) -> str:
+    """Minúsculas sin acentos, para comparar sin depender de la escritura.
+
+        >>> sin_acentos("Ácido Sulfúrico")
+        'acido sulfurico'
+    """
     descompuesto = unicodedata.normalize("NFD", texto or "")
     return "".join(c for c in descompuesto if unicodedata.category(c) != "Mn").lower()
+
+
+# Nombre interno histórico; se conserva porque lo usan las funciones de abajo.
+_clave = sin_acentos
 
 
 def normalizar_tipo_envase(texto: str) -> Optional[str]:
@@ -173,4 +279,36 @@ def dependencia_oficial(nombre: str) -> Optional[Tuple[str, str, str]]:
     for entrada in DEPENDENCIAS_OFICIALES:
         if objetivo in (_clave(entrada[1]), _clave(entrada[2])):
             return entrada
+    return None
+
+
+def clave_persona(nombre: str) -> str:
+    """Clave de comparación de un nombre: sin acentos, sin dobles espacios.
+
+    Es lo que hace equivalentes "Miguel Angel Leguía Martinez" y "Miguel Angel
+    Leguia Martinez", que en el histórico son dos filas y una sola persona.
+    """
+    return " ".join(_clave(nombre).split())
+
+
+def persona_oficial(nombre: str) -> Optional[str]:
+    """Devuelve el nombre canónico de una persona del padrón, o None.
+
+    Resuelve tanto el nombre canónico como cualquiera de sus variantes:
+
+        >>> persona_oficial("Javier Quino")
+        'Javier Quino Favero'
+        >>> persona_oficial("MILAGROS ALVARADO")
+        'Milagros Ariana Alvarado Apaza'
+        >>> persona_oficial("Alguien que no está en el padrón") is None
+        True
+    """
+    objetivo = clave_persona(nombre)
+    if not objetivo:
+        return None
+    for canonico, _dep, _enc, _csbqr, _gen, alias in PERSONAL_OFICIAL:
+        if objetivo == clave_persona(canonico):
+            return canonico
+        if any(objetivo == clave_persona(variante) for variante in alias):
+            return canonico
     return None

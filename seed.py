@@ -11,13 +11,12 @@ incompatibilidad deja la base sincronizada sin tocar las declaraciones.
 
 import sys
 
-from core.database import SessionLocal, DATABASE_URL
+from core.database import SessionLocal
 from core.seeder_3fn import sembrar_datos_maestros
 
 
 def main() -> int:
-    motor = "SQLite (desarrollo)" if DATABASE_URL.startswith("sqlite") else "PostgreSQL"
-    print(f"Sembrando datos maestros en {motor}...")
+    print("Sembrando datos maestros en PostgreSQL...")
 
     db = SessionLocal()
     try:

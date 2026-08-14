@@ -12,6 +12,7 @@ from typing import Dict, Iterable, List, Optional, Sequence, Tuple
 from sqlalchemy import func
 from sqlalchemy.orm import Session, joinedload
 
+from core.catalogos import clave_persona, normalizar_tipo_envase
 from core.codigos import codigo_formato, codigo_identificador, siguiente_secuencia, token_fecha
 from core.db_models import (
     CategoriaULimaDB,
@@ -22,18 +23,27 @@ from core.db_models import (
     DependenciaDB,
     LaboratorioDB,
     MovimientoKardexDB,
+    PersonaAliasDB,
+    PersonaDB,
     RegistroDB,
     ReglaIncompatibilidadDB,
+    TipoEnvaseDB,
+    ahora_utc,
 )
 from core.models import (
     MOVIMIENTO_POR_TRANSICION,
     TRANSICIONES_PERMITIDAS,
     CambioEstadoRequest,
+    ConfirmacionCategoriaRequest,
+    DecisionClasificacion,
     EntradaResiduoRequest,
     EstadoResiduo,
     MotivoMovimiento,
+    NivelConfianza,
     ResultadoClasificacion,
+    RolPadron,
     TipoMovimiento,
+    requiere_escalamiento,
 )
 from core.seeder_3fn import par_canonico
 
@@ -49,9 +59,10 @@ class TransicionInvalida(ValueError):
 def _normalizar(texto: str) -> str:
     """Clave de comparación insensible a mayúsculas y espacios sobrantes.
 
-    La normalización se hace en Python y no con `lower()` de SQL porque SQLite
-    solo pliega caracteres ASCII: 'Química' y 'QUÍMICA' se considerarían
-    distintos allí e iguales en PostgreSQL.
+    Se normaliza en Python y no con `lower()` de SQL porque el plegado de
+    acentos depende de la colación con la que se creó la base: 'Química' y
+    'QUÍMICA' coinciden bajo `es_ES.UTF-8` y no bajo `C`. Hacerlo aquí es lo que
+    garantiza que dos instalaciones distintas resuelvan el mismo laboratorio.
     """
     return " ".join(texto.split()).casefold()
 
@@ -108,6 +119,141 @@ def resolver_laboratorio(
     db.add(laboratorio)
     db.flush()
     return laboratorio
+
+
+def resolver_tipo_envase(db: Session, texto: Optional[str]) -> Optional[TipoEnvaseDB]:
+    """Lleva una descripción de envase al tipo del catálogo, o devuelve None.
+
+    Acepta tanto el nombre canónico que envía el móvil como una descripción
+    libre, que es lo que trae el histórico con sus 50 variantes del mismo
+    concepto. Si el texto no permite decidir, no se fuerza una coincidencia:
+    un envase mal clasificado es peor que uno sin clasificar.
+    """
+    if not texto or not texto.strip():
+        return None
+
+    objetivo = _normalizar(texto)
+    for tipo in db.query(TipoEnvaseDB).all():
+        if _normalizar(tipo.nombre) == objetivo:
+            return tipo
+
+    canonico = normalizar_tipo_envase(texto)
+    if canonico is None:
+        return None
+    objetivo = _normalizar(canonico)
+    for tipo in db.query(TipoEnvaseDB).all():
+        if _normalizar(tipo.nombre) == objetivo:
+            return tipo
+    return None
+
+
+def buscar_persona(db: Session, nombre: str) -> Optional[PersonaDB]:
+    """Encuentra a una persona del padrón por su nombre o por cualquier alias.
+
+    Es lo que hace que "Javier Quino" y "Javier Quino Favero" resuelvan a la
+    misma persona en lugar de a dos.
+    """
+    clave = clave_persona(nombre)
+    if not clave:
+        return None
+
+    persona = db.query(PersonaDB).filter(PersonaDB.nombre_clave == clave).first()
+    if persona:
+        return persona
+
+    alias = db.query(PersonaAliasDB).filter(PersonaAliasDB.alias_clave == clave).first()
+    return alias.persona if alias else None
+
+
+def registrar_persona(
+    db: Session,
+    nombre: str,
+    dependencia: Optional[str] = None,
+    correo: Optional[str] = None,
+    telefono: Optional[str] = None,
+    es_encargado: bool = False,
+    es_csbqr: bool = False,
+    es_generador: bool = True,
+) -> PersonaDB:
+    """Da de alta a alguien que no estaba en el padrón, o devuelve al existente.
+
+    El catálogo no es cerrado: quien no esté sembrado se registra sobre la
+    marcha y queda con `en_catalogo_oficial` en falso, visible para el CSBQR.
+    """
+    try:
+        existente = buscar_persona(db, nombre)
+        if existente:
+            # Los papeles se acumulan: quien ya estaba como generador y ahora
+            # firma como encargado es la misma persona con un papel más.
+            existente.es_encargado = existente.es_encargado or es_encargado
+            existente.es_csbqr = existente.es_csbqr or es_csbqr
+            existente.es_generador = existente.es_generador or es_generador
+            db.commit()
+            db.refresh(existente)
+            return existente
+
+        limpio = " ".join(nombre.split())
+        dependencia_db = resolver_dependencia(db, dependencia) if dependencia else None
+        persona = PersonaDB(
+            codigo=_codigo_secuencial(db, PersonaDB, "PER"),
+            nombre=limpio,
+            nombre_clave=clave_persona(limpio),
+            correo=(correo or "").strip() or None,
+            telefono=(telefono or "").strip() or None,
+            dependencia_id=dependencia_db.id if dependencia_db else None,
+            es_encargado=es_encargado,
+            es_csbqr=es_csbqr,
+            es_generador=es_generador,
+            en_catalogo_oficial=False,
+        )
+        db.add(persona)
+        db.commit()
+        db.refresh(persona)
+        return persona
+    except Exception:
+        db.rollback()
+        raise
+
+
+def filtrar_personal(
+    db: Session,
+    rol: Optional[RolPadron] = None,
+    dependencia: Optional[str] = None,
+    busqueda: Optional[str] = None,
+    solo_activos: bool = True,
+) -> List[PersonaDB]:
+    """Padrón para los desplegables del móvil, en orden alfabético."""
+    consulta = db.query(PersonaDB).options(joinedload(PersonaDB.dependencia))
+
+    if solo_activos:
+        consulta = consulta.filter(PersonaDB.activo.is_(True))
+    if rol is RolPadron.ENCARGADO:
+        consulta = consulta.filter(PersonaDB.es_encargado.is_(True))
+    elif rol is RolPadron.CSBQR:
+        consulta = consulta.filter(PersonaDB.es_csbqr.is_(True))
+    elif rol is RolPadron.GENERADOR:
+        consulta = consulta.filter(PersonaDB.es_generador.is_(True))
+
+    personas = consulta.all()
+
+    if dependencia:
+        objetivo = _normalizar(dependencia)
+        # Quien no tiene dependencia asignada es personal del CSBQR, que
+        # atiende todos los laboratorios: filtrarlo fuera dejaría al móvil sin
+        # nadie a quien atribuir la elaboración de la declaración.
+        personas = [
+            p for p in personas
+            if p.dependencia is None or _normalizar(p.dependencia.nombre) == objetivo
+        ]
+    if busqueda:
+        clave = clave_persona(busqueda)
+        personas = [
+            p for p in personas
+            if clave in p.nombre_clave
+            or any(clave in a.alias_clave for a in p.alias)
+        ]
+
+    return sorted(personas, key=lambda p: p.nombre_clave)
 
 
 def _secuencia_libre(db: Session, columna, momento: date) -> int:
@@ -273,6 +419,7 @@ def crear_declaracion(
             .scalar()
         ) + 1
         resultado.id_residuo = codigo_residuo
+        envase = resolver_tipo_envase(db, entrada.tipo_envase)
 
         declaracion = DeclaracionResiduoDB(
             codigo_residuo=codigo_residuo,
@@ -289,6 +436,10 @@ def crear_declaracion(
             nombre_normalizado=resultado.nombre_normalizado,
             estado_fisico=entrada.estado_fisico.value,
             foto_url=entrada.foto_url,
+            tipo_envase_id=envase.id if envase else None,
+            ancho_cm=entrada.ancho_cm,
+            alto_cm=entrada.alto_cm,
+            profundidad_cm=entrada.profundidad_cm,
             cantidad=resultado.cantidad,
             unidad=resultado.unidad.value,
             modo_medicion=resultado.modo_medicion.value,
@@ -308,6 +459,10 @@ def crear_declaracion(
             ),
             escalar_csbqr=resultado.escalar_csbqr,
             narrativa=resultado.narrativa,
+            # Nace como propuesta sin confirmar: la categoría vigente y la
+            # propuesta son la misma hasta que alguien la revise.
+            categoria_propuesta_id=categoria.id,
+            clasificacion_confirmada=False,
         )
         db.add(declaracion)
         db.flush()
@@ -399,6 +554,97 @@ def cambiar_estado(
         db.commit()
         db.refresh(movimiento)
         return movimiento
+
+    except Exception:
+        db.rollback()
+        raise
+
+
+def confirmar_clasificacion(
+    db: Session,
+    declaracion: DeclaracionResiduoDB,
+    peticion: ConfirmacionCategoriaRequest,
+) -> DeclaracionResiduoDB:
+    """Registra que un humano aceptó o corrigió la categoría propuesta.
+
+    La propuesta original nunca se pierde: `categoria_propuesta_id` conserva lo
+    que dedujo el sistema y `categoria_id` pasa a ser lo que decidió la persona.
+    Comparar ambas columnas es lo que permite medir el acierto del clasificador
+    con residuos reales, en vez de suponerlo.
+
+    Una corrección puede además sacar al residuo de evaluación: si el sistema
+    lo escaló al CSBQR por no identificarlo y alguien reconoce la categoría, el
+    motivo del escalamiento deja de existir.
+    """
+    if declaracion.estado == EstadoResiduo.DISPUESTO.value:
+        raise TransicionInvalida(
+            "El residuo ya fue entregado al operador: su clasificación no puede "
+            "cambiarse, porque es la que salió declarada."
+        )
+
+    try:
+        categoria_previa = declaracion.categoria
+
+        if peticion.decision is DecisionClasificacion.CORREGIDA:
+            categoria = db.get(CategoriaULimaDB, peticion.categoria_id)
+            if categoria is None:
+                raise DatoMaestroFaltante(
+                    f"La categoría '{peticion.categoria_id}' no existe en la ontología"
+                )
+            if categoria.id == declaracion.categoria_id:
+                raise ValueError(
+                    "La categoría indicada es la que ya tiene la declaración: "
+                    "para dejarla como está, la decisión es 'aceptada'"
+                )
+
+            declaracion.categoria_id = categoria.id
+            # Una categoría elegida por una persona no es una deducción: es la
+            # decisión de quien tiene el residuo delante.
+            declaracion.confianza = NivelConfianza.ALTO.value
+            declaracion.escalar_csbqr = requiere_escalamiento(
+                categoria.id, declaracion.desconocido
+            )
+            # El estado solo se toca si el residuo sigue en el laboratorio. Uno
+            # ya trasladado o almacenado no vuelve atrás porque se corrija su
+            # etiqueta: el kardex dice dónde está y esto no lo mueve.
+            if declaracion.estado in (
+                EstadoResiduo.GENERADO.value,
+                EstadoResiduo.EN_EVALUACION.value,
+            ):
+                declaracion.estado = (
+                    EstadoResiduo.EN_EVALUACION.value if declaracion.escalar_csbqr
+                    else EstadoResiduo.GENERADO.value
+                )
+
+            detalle = (
+                f"Clasificación corregida: {categoria_previa.nombre} → {categoria.nombre}"
+            )
+        else:
+            detalle = f"Clasificación confirmada: {categoria_previa.nombre}"
+
+        declaracion.clasificacion_confirmada = True
+        declaracion.confirmada_por = peticion.confirmada_por
+        declaracion.confirmada_en = ahora_utc()
+
+        if peticion.motivo:
+            detalle = f"{detalle}. {peticion.motivo}"
+
+        # La revisión queda en el kardex, que es donde se lee la historia del
+        # residuo. Un ajuste sin movimiento sería un cambio sin rastro.
+        registrar_movimiento(
+            db,
+            declaracion,
+            tipo=TipoMovimiento.AJUSTE,
+            motivo=MotivoMovimiento.CORRECCION,
+            registrado_por=peticion.confirmada_por,
+            cantidad_g=None,
+            laboratorio_origen_id=declaracion.registro.laboratorio_id,
+            observacion=detalle,
+        )
+
+        db.commit()
+        db.refresh(declaracion)
+        return declaracion
 
     except Exception:
         db.rollback()

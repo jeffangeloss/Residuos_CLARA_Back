@@ -15,10 +15,14 @@ venv/
 !.env.example
 
 # Local development data and generated artifacts
-residuos_clara.db
+generated/
+almacenamiento/
+
+# Bases SQLite. El proyecto ya no las usa (Fase 9), pero el patrón se conserva
+# para que un archivo suelto de una copia antigua no acabe en el repositorio.
+*.db
 *.db.bak
 *.sqlite3
-generated/
 
 # Editor and operating system files
 .DS_Store

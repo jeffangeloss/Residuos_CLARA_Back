@@ -15,10 +15,11 @@ from sqlalchemy.orm import Session
 
 from core.db_models import (
     CategoriaULimaDB, DeclaracionResiduoDB, DependenciaDB, LaboratorioDB,
-    ReglaIncompatibilidadDB, TipoEnvaseDB,
+    PersonaAliasDB, PersonaDB, ReglaIncompatibilidadDB, TipoEnvaseDB,
 )
 from core.catalogos import (
-    DEPENDENCIAS_OFICIALES, LABORATORIOS_OFICIALES, TIPOS_ENVASE_OFICIALES,
+    DEPENDENCIAS_OFICIALES, LABORATORIOS_OFICIALES, PERSONAL_OFICIAL,
+    TIPOS_ENVASE_OFICIALES, clave_persona,
 )
 from core.classifier import MATRIZ_CSBQR, ONTOLOGIA, PARES_SIN_GRUPO_ASIGNADO
 
@@ -56,7 +57,8 @@ def par_canonico(grupo_a: str, grupo_b: str) -> Tuple[str, str]:
     La matriz de incompatibilidad es simétrica: (ÁCIDO, BASE) y (BASE, ÁCIDO)
     son la misma regla. El orden se fija en Python, por puntos de código, y no
     con una restricción SQL, porque la comparación de cadenas acentuadas depende
-    de la colación y ordenaría distinto en SQLite que en PostgreSQL.
+    de la colación con que se creó la base: dos instalaciones con distinta
+    configuración regional guardarían el par al revés y la regla se duplicaría.
     """
     return tuple(sorted((grupo_a, grupo_b)))
 
@@ -132,6 +134,79 @@ def _sembrar_tipos_envase(db: Session, resumen: Dict) -> None:
         elif tipo.nombre != nombre:
             tipo.nombre = nombre
             resumen["envases_actualizados"].append(nombre)
+    db.flush()
+
+
+def _sembrar_padron(db: Session, resumen: Dict) -> None:
+    """Siembra el padrón de personal con los nombres reales del histórico.
+
+    Es lo que sustituye al texto libre de los formularios. Igual que el de
+    laboratorios, el padrón no es cerrado: quien se dé de alta sobre la marcha
+    se conserva y no se toca aquí; lo que hace la siembra es fijar los nombres
+    canónicos, sus variantes conocidas y los papeles de cada persona.
+    """
+    dependencias = {
+        dependencia.nombre: dependencia for dependencia in db.query(DependenciaDB).all()
+    }
+
+    for orden, entrada in enumerate(PERSONAL_OFICIAL, start=1):
+        nombre, dependencia, es_encargado, es_csbqr, es_generador, alias = entrada
+        clave = clave_persona(nombre)
+        persona = db.query(PersonaDB).filter_by(nombre_clave=clave).first()
+        dependencia_id = (
+            dependencias[dependencia].id if dependencia in dependencias else None
+        )
+
+        if not persona:
+            persona = PersonaDB(
+                codigo=f"PER-{orden:04d}",
+                nombre=nombre,
+                nombre_clave=clave,
+                dependencia_id=dependencia_id,
+                es_encargado=es_encargado,
+                es_csbqr=es_csbqr,
+                es_generador=es_generador,
+                en_catalogo_oficial=True,
+            )
+            db.add(persona)
+            db.flush()
+            resumen["personal_creado"].append(nombre)
+        else:
+            cambios = (
+                persona.dependencia_id != dependencia_id
+                or persona.es_encargado != es_encargado
+                or persona.es_csbqr != es_csbqr
+                or persona.es_generador != es_generador
+                or not persona.en_catalogo_oficial
+            )
+            if cambios:
+                persona.dependencia_id = dependencia_id
+                persona.es_encargado = es_encargado
+                persona.es_csbqr = es_csbqr
+                persona.es_generador = es_generador
+                persona.en_catalogo_oficial = True
+                resumen["personal_actualizado"].append(nombre)
+
+        for variante in alias:
+            clave_alias = clave_persona(variante)
+            existente = (
+                db.query(PersonaAliasDB).filter_by(alias_clave=clave_alias).first()
+            )
+            if not existente:
+                db.add(PersonaAliasDB(
+                    persona_id=persona.id,
+                    alias_clave=clave_alias,
+                    alias_texto=variante,
+                ))
+                resumen["alias_creados"].append(f"{variante} → {nombre}")
+            elif existente.persona_id != persona.id:
+                # Una variante no puede apuntar a dos personas: si ocurre, el
+                # padrón está mal escrito y hay que verlo, no repararlo a
+                # ciegas asignándosela a la última que pasó por aquí.
+                resumen["alias_en_conflicto"].append(
+                    f"{variante} → {existente.persona.nombre} / {nombre}"
+                )
+
     db.flush()
 
 
@@ -229,6 +304,10 @@ def sembrar_datos_maestros(db: Session, verboso: bool = True) -> Dict[str, List]
         "laboratorios_actualizados": [],
         "envases_creados": [],
         "envases_actualizados": [],
+        "personal_creado": [],
+        "personal_actualizado": [],
+        "alias_creados": [],
+        "alias_en_conflicto": [],
         "categorias_creadas": [],
         "categorias_actualizadas": [],
         "categorias_huerfanas_eliminadas": [],
@@ -241,6 +320,9 @@ def sembrar_datos_maestros(db: Session, verboso: bool = True) -> Dict[str, List]
     try:
         _sembrar_catalogo_institucional(db, resumen)
         _sembrar_tipos_envase(db, resumen)
+        # Después del catálogo institucional: cada persona cuelga de su
+        # dependencia, que tiene que existir antes.
+        _sembrar_padron(db, resumen)
         _sembrar_categorias(db, resumen)
         _reconciliar_categorias_huerfanas(db, resumen)
         _sembrar_reglas(db, resumen)
@@ -268,4 +350,10 @@ def _reportar(resumen: Dict[str, List]) -> None:
         print(
             "⚠️ Hay categorías fuera de la ontología con declaraciones asociadas. "
             "Requieren decisión del responsable de dominio antes de retirarlas."
+        )
+
+    if resumen["alias_en_conflicto"]:
+        print(
+            "⚠️ Hay variantes de nombre asignadas a dos personas distintas en el "
+            "padrón. Corrija PERSONAL_OFICIAL antes de importar el histórico."
         )

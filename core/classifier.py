@@ -5,8 +5,10 @@ Universidad de Lima - CSBQR
 
 from typing import List, Dict, Tuple
 from uuid import uuid4
+from core.catalogos import sin_acentos
 from core.models import (
     EntradaResiduoRequest, EstadoFisico, ModoMedicion, ResultadoClasificacion, Unidad,
+    requiere_escalamiento,
 )
 
 # Ontología Canónica ULima (15 Categorías)
@@ -293,23 +295,31 @@ def clasificar_residuo(req: EntradaResiduoRequest) -> ResultadoClasificacion:
         origen_categoria = "declarado"
     else:
         origen_categoria = "inferido"
-        # Inferencia por insumos ingresados
-        texto_insumos = " ".join(req.insumos).lower()
-        if any(r in texto_insumos for r in ["radioactivo", "radiactivo", "isótopo", "isotopo"]):
+        # Inferencia por insumos ingresados.
+        #
+        # El texto se pliega a minúsculas y **se le quitan los acentos** antes
+        # de comparar, y las palabras clave se escriben ya sin ellos. Antes cada
+        # lista decidía por su cuenta si incluir las dos escrituras: "peroxido"
+        # y "bateria" estaban, pero "acido", "sulfurico" e "hidroxido" no. Quien
+        # declaraba desde un teléfono —donde la tilde exige mantener pulsada la
+        # tecla— obtenía "no identificado" y un escalamiento al CSBQR que no
+        # correspondía.
+        texto_insumos = sin_acentos(" ".join(req.insumos))
+        if any(r in texto_insumos for r in ["radioactivo", "radiactivo", "isotopo"]):
             cat_id = "radiactivos"
-        elif any(e in texto_insumos for e in ["raee", "computadora", "monitor", "electrónico", "electronico", "batería", "bateria"]):
+        elif any(e in texto_insumos for e in ["raee", "computadora", "monitor", "electronico", "bateria"]):
             cat_id = "raee"
         elif any(a in texto_insumos for a in ["aceite", "lubricante"]):
             cat_id = "aceites-contaminados"
         elif any(h in texto_insumos for h in ["cloroformo", "diclorometano", "cloruro de metileno", "halogenado"]):
             cat_id = "solventes-halogenados"
-        elif any(o in texto_insumos for o in ["permanganato", "peróxido", "peroxido", "nitrato", "hipoclorito"]):
+        elif any(o in texto_insumos for o in ["permanganato", "peroxido", "nitrato", "hipoclorito"]):
             cat_id = "oxidantes"
         elif any(m in texto_insumos for m in ["cobre", "hierro", "plomo", "zinc", "mercurio"]):
             cat_id = "metales-pesados"
-        elif any(a in texto_insumos for a in ["ácido", "sulfúrico", "clorhídrico", "nítrico"]):
+        elif any(a in texto_insumos for a in ["acido", "sulfurico", "clorhidrico", "nitrico"]):
             cat_id = "acidos-corrosivos"
-        elif any(b in texto_insumos for b in ["hidróxido", "sodio", "potasio", "amonio"]):
+        elif any(b in texto_insumos for b in ["hidroxido", "sodio", "potasio", "amonio"]):
             cat_id = "bases-corrosivas"
         elif any(s in texto_insumos for s in ["acetona", "etanol", "metanol", "hexano"]):
             cat_id = "solventes-no-halogenados"
@@ -388,6 +398,6 @@ def clasificar_residuo(req: EntradaResiduoRequest) -> ResultadoClasificacion:
         confianza=CONFIANZA_POR_ORIGEN[origen_categoria],
         observaciones=observaciones,
         pictogramas_ghs=pictogramas,
-        escalar_csbqr=req.desconocido or cat_id in {"no-identificados", "radiactivos"},
+        escalar_csbqr=requiere_escalamiento(cat_id, req.desconocido),
         narrativa=f"Residuo catalogado como {cat_info['nombre']}. Requiere almacenamiento segregado."
     )
